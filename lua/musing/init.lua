@@ -17,6 +17,7 @@ M.config = {
 
 local heuristics = require("musing.heuristics")
 local sidecar = require("musing.sidecar")
+local infer = require("musing.infer")
 
 local ns = vim.api.nvim_create_namespace("musing")
 
@@ -76,6 +77,28 @@ local function display(buf, elements, overrides)
   end
 end
 
+--- Apply LLM results back into the elements list.
+local function apply_llm_results(elements, results)
+  if not results then return end
+  -- Build a lookup from line range to element index
+  local by_key = {}
+  for idx, el in ipairs(elements) do
+    local key = el.start_line == el.end_line
+      and tostring(el.start_line)
+      or (el.start_line .. "-" .. el.end_line)
+    by_key[key] = idx
+  end
+  for _, r in ipairs(results) do
+    local idx = by_key[r.line]
+    if idx and r.type then
+      elements[idx].type = r.type
+      elements[idx].confidence = 1.0
+      if r.level then elements[idx].attrs.level = r.level end
+      if r.style then elements[idx].attrs.style = r.style end
+    end
+  end
+end
+
 --- Analyze the current buffer.
 function M.analyze(buf)
   buf = buf or vim.api.nvim_get_current_buf()
@@ -84,10 +107,36 @@ function M.analyze(buf)
   if filepath == "" then return end
 
   local elements = heuristics.classify(lines)
-  sidecar.write(filepath, elements)
 
-  local data = sidecar.read(filepath)
-  display(buf, elements, data.overrides)
+  -- Collect low-confidence elements for LLM
+  local ambiguous = {}
+  for _, el in ipairs(elements) do
+    if el.confidence and el.confidence < (M.config.confidence_threshold + 0.1) then
+      ambiguous[#ambiguous + 1] = el
+    end
+  end
+
+  -- If LLM endpoint configured and there are ambiguous elements, call async
+  if M.config.llm_endpoint and #ambiguous > 0 then
+    -- Write heuristics-only sidecar first (instant feedback)
+    sidecar.write(filepath, elements)
+    local data = sidecar.read(filepath)
+    display(buf, elements, data.overrides)
+
+    -- Then refine async
+    infer.call_async(M.config.llm_endpoint, lines, ambiguous, function(results)
+      if results then
+        apply_llm_results(elements, results)
+        sidecar.write(filepath, elements)
+        data = sidecar.read(filepath)
+        display(buf, elements, data.overrides)
+      end
+    end)
+  else
+    sidecar.write(filepath, elements)
+    local data = sidecar.read(filepath)
+    display(buf, elements, data.overrides)
+  end
 end
 
 --- Override an element type at the current cursor line.
