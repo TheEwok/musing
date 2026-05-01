@@ -15,7 +15,7 @@ local TABLE_SEP_PAT = "^[%s|%-:]+"
 
 --- Check if a line looks like a heading.
 --- Short line, followed by a blank (or EOF), not punctuation-heavy.
-local function is_heading_line(line, next_line)
+local function is_heading_line(line, next_line, prev_line)
   if #line == 0 or #line > 120 then return false end
   -- Must be followed by blank or EOF
   if next_line and not next_line:match(BLANK_PAT) then return false end
@@ -26,6 +26,19 @@ local function is_heading_line(line, next_line)
   -- Heuristic: short, no trailing punctuation typical of sentences
   if #line > 80 then return false end
   if line:match("[%.,%;]%s*$") then return false end
+  -- Reject data-like lines: contain digits mixed with words
+  local trimmed = line:match("^%s*(.-)%s*$")
+  if trimmed:match("%d") and trimmed:match("%a") and #trimmed:gsub("%s+", " "):gsub("[^ ]", "") >= 2 then
+    return false
+  end
+  -- If previous line has similar structure (same indent, similar length), not a heading
+  if prev_line and not prev_line:match(BLANK_PAT) then
+    local indent_cur = #(line:match("^(%s*)") or "")
+    local indent_prev = #(prev_line:match("^(%s*)") or "")
+    if indent_cur == indent_prev and math.abs(#line - #prev_line) < 20 then
+      return false
+    end
+  end
   return true
 end
 
@@ -41,14 +54,11 @@ end
 
 --- Detect table rows: lines with 2+ pipe characters or consistent multi-space gaps.
 local function is_table_row(line)
-  -- Pipe-delimited
+  -- Pipe-delimited (unambiguous)
   local pipes = 0
   for _ in line:gmatch("|") do pipes = pipes + 1 end
   if pipes >= 2 then return true end
-  -- Column-aligned: 3+ segments separated by 2+ spaces
-  local cols = 0
-  for _ in line:gmatch("%S+%s%s+") do cols = cols + 1 end
-  return cols >= 2
+  return false
 end
 
 local function is_table_separator(line)
@@ -153,7 +163,7 @@ function M.classify(lines)
       add(start, i - 1, "table", { columns = col_count })
 
     -- Heading (must check after lists/quotes/code since those take priority)
-    elseif is_heading_line(line, next_line) then
+    elseif is_heading_line(line, next_line, lines[i - 1]) then
       add(i, i, "heading", { level = heading_level(line, i) }, 0.8)
       i = i + 1
 
@@ -168,11 +178,23 @@ function M.classify(lines)
           or (l:match(INDENT_PAT) or l:match(TAB_PAT)) then
           break
         end
-        -- Check if this line is a heading (short, next is blank)
-        if is_heading_line(l, lines[i + 1]) then break end
+        if is_heading_line(l, lines[i + 1], lines[i - 1]) then break end
         i = i + 1
       end
-      add(start, i - 1, "paragraph")
+      -- Lower confidence for blocks of short lines that look data-like
+      -- (multiple words per line, similar lengths) — LLM should review
+      local block_len = (i - 1) - start + 1
+      local conf = 1.0
+      if block_len >= 2 then
+        local short_count = 0
+        local has_digits = false
+        for j = start, i - 1 do
+          if #lines[j] < 50 then short_count = short_count + 1 end
+          if lines[j]:match("%d") then has_digits = true end
+        end
+        if short_count == block_len and has_digits then conf = 0.5 end
+      end
+      add(start, i - 1, "paragraph", {}, conf)
     end
   end
 
