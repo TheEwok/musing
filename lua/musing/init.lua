@@ -18,6 +18,7 @@ M.config = {
 local heuristics = require("musing.heuristics")
 local sidecar = require("musing.sidecar")
 local infer = require("musing.infer")
+local compile = require("musing.compile")
 
 local ns = vim.api.nvim_create_namespace("musing")
 
@@ -196,6 +197,19 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("MusingClear", function()
     clear(vim.api.nvim_get_current_buf())
   end, {})
+  vim.api.nvim_create_user_command("MusingCompile", function(cmd)
+    local filepath = vim.api.nvim_buf_get_name(0)
+    if filepath == "" then vim.notify("musing: no file", vim.log.levels.ERROR); return end
+    local fmt = cmd.args ~= "" and cmd.args or "html"
+    local outpath, err = compile.compile(filepath, fmt)
+    if outpath then
+      vim.notify("musing: compiled → " .. outpath, vim.log.levels.INFO)
+    else
+      vim.notify("musing: " .. (err or "unknown error"), vim.log.levels.ERROR)
+    end
+  end, { nargs = "?", complete = function()
+    return { "html", "pdf", "docx", "epub", "latex" }
+  end })
 end
 
 return M
