@@ -140,8 +140,19 @@ function M.compile(filepath, format)
   f:write(md)
   f:close()
 
-  local cmd = string.format("pandoc %s -f markdown -o %s 2>&1",
-    vim.fn.shellescape(tmp), vim.fn.shellescape(outpath))
+  local pdf_engine = ""
+  if format == "pdf" then
+    -- Prefer tectonic, fall back to xelatex, then pdflatex
+    for _, eng in ipairs({ "tectonic", "xelatex", "pdflatex" }) do
+      if vim.fn.executable(eng) == 1 then
+        pdf_engine = " --pdf-engine=" .. eng
+        break
+      end
+    end
+  end
+
+  local cmd = string.format("pandoc %s -f markdown%s -o %s 2>&1",
+    vim.fn.shellescape(tmp), pdf_engine, vim.fn.shellescape(outpath))
   local result = vim.fn.system(cmd)
   os.remove(tmp)
 
